@@ -1,0 +1,646 @@
+"""
+w_gui - Библиотека для создания графических интерфейсов с PNG кнопками
+Автоматически устанавливает зависимости: pip install pillow
+"""
+
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog, simpledialog
+import threading
+import queue
+import os
+
+# Проверяем наличие Pillow и устанавливаем при необходимости
+try:
+    from PIL import Image, ImageTk
+    PIL_AVAILABLE = True
+except ImportError:
+    try:
+        import subprocess
+        import sys
+        print("Установка библиотеки Pillow...")
+        subprocess.check_call([sys.executable, "-m", "pip", "install", "pillow"])
+        from PIL import Image, ImageTk
+        PIL_AVAILABLE = True
+        print("Pillow успешно установлен!")
+    except:
+        PIL_AVAILABLE = False
+        print("Предупреждение: Pillow не установлен. PNG изображения не будут работать.")
+        print("Установите вручную: pip install pillow")
+
+class WindowManager:
+    def __init__(self):
+        self.root = None
+        self.widgets = {}
+        self.variables = {}
+        self.event_queue = queue.Queue()
+        self.after_id = None
+        self.images = {}
+        self.canvas = None
+        
+    def _process_events(self):
+        """Обработка событий из очереди"""
+        try:
+            while True:
+                func, args, kwargs = self.event_queue.get_nowait()
+                func(*args, **kwargs)
+        except queue.Empty:
+            pass
+        finally:
+            if self.root:
+                self.after_id = self.root.after(100, self._process_events)
+
+# Глобальный экземпляр менеджера окон
+_wm = WindowManager()
+
+# ========== БАЗОВЫЕ ФУНКЦИИ ОКНА ==========
+
+def w_init(title="Программа", width=800, height=600):
+    """Создает главное окно программы"""
+    _wm.root = tk.Tk()
+    _wm.root.title(title)
+    _wm.root.geometry(f"{width}x{height}")
+    _wm._process_events()
+    return _wm.root
+
+def w_canvas():
+    """Создает область для рисования"""
+    if _wm.root:
+        _wm.canvas = tk.Canvas(_wm.root, bg="white")
+        _wm.canvas.pack(fill=tk.BOTH, expand=True)
+        return _wm.canvas
+    return None
+
+def w_mainloop():
+    """Запускает главный цикл программы"""
+    if _wm.root:
+        _wm.root.mainloop()
+
+def w_destroy():
+    """Закрывает окно программы"""
+    if _wm.root:
+        _wm.root.destroy()
+
+# ========== ФУНКЦИИ КНОПОК ==========
+
+def w_button(image_or_color, text, x=0, y=0, width=None, height=None, 
+            text_color="#000000", font_size=12, font_family="Arial",
+            command=None, tag=None):
+    """
+    Создает кнопку с PNG изображением или цветным фоном
+    
+    image_or_color: путь к PNG файлу ИЛИ цвет (#FFFFFF или FFFFFF)
+    text: текст на кнопке
+    x, y: координаты левой нижней точки (0,0 - левый нижний угол)
+    width, height: размеры кнопки (если None - размер изображения)
+    command: функция при нажатии
+    """
+    if not _wm.root:
+        w_init()
+    
+    if not _wm.canvas:
+        w_canvas()
+    
+    canvas_height = _wm.canvas.winfo_height()
+    if canvas_height <= 1:
+        _wm.root.update()
+        canvas_height = _wm.canvas.winfo_height()
+    
+    y_canvas = canvas_height - y
+    
+    # Проверяем, это изображение или цвет
+    is_image = False
+    image_obj = None
+    
+    if isinstance(image_or_color, str):
+        lower_path = image_or_color.lower()
+        if lower_path.endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp')):
+            is_image = True
+            
+            if PIL_AVAILABLE:
+                image_key = f"{image_or_color}_{width}_{height}"
+                if image_key in _wm.images:
+                    image_obj = _wm.images[image_key]
+                else:
+                    try:
+                        img = Image.open(image_or_color)
+                        if width is not None and height is not None:
+                            img = img.resize((width, height), Image.Resampling.LANCZOS)
+                        else:
+                            width, height = img.size
+                        image_obj = ImageTk.PhotoImage(img)
+                        _wm.images[image_key] = image_obj
+                    except Exception as e:
+                        print(f"Ошибка загрузки изображения: {e}")
+                        image_or_color = "#808080"
+                        is_image = False
+            else:
+                print(f"Pillow не установлен. Используется цвет для: {image_or_color}")
+                image_or_color = "#808080"
+                is_image = False
+    
+    # Создаем кнопку
+    button_id = None
+    text_id = None
+    
+    if is_image and image_obj:
+        button_id = _wm.canvas.create_image(x, y_canvas - height/2, 
+                                           anchor=tk.NW, image=image_obj, tag=tag)
+    else:
+        if not image_or_color.startswith('#'):
+            image_or_color = '#' + image_or_color
+        
+        if width is None:
+            width = 100
+        if height is None:
+            height = 40
+            
+        button_id = _wm.canvas.create_rectangle(x, y_canvas - height, 
+                                               x + width, y_canvas,
+                                               fill=image_or_color, 
+                                               outline="black", width=2,
+                                               tag=tag)
+    
+    # Добавляем текст
+    if text:
+        if not text_color.startswith('#'):
+            text_color = '#' + text_color
+            
+        text_x = x + width/2 if width else x + 50
+        text_y = y_canvas - height/2 if height else y_canvas - 20
+        
+        text_id = _wm.canvas.create_text(text_x, text_y, 
+                                        text=text, fill=text_color,
+                                        font=(font_family, font_size),
+                                        tag=tag)
+    
+    # Привязываем события
+    if command:
+        def on_click(event):
+            command()
+        
+        if button_id:
+            _wm.canvas.tag_bind(button_id, '<Button-1>', on_click)
+        if text_id:
+            _wm.canvas.tag_bind(text_id, '<Button-1>', on_click)
+    
+    # Сохраняем информацию
+    widget_id = f"button_{len(_wm.widgets)}"
+    _wm.widgets[widget_id] = {
+        'type': 'button',
+        'button_id': button_id,
+        'text_id': text_id,
+        'x': x,
+        'y': y,
+        'width': width,
+        'height': height,
+        'command': command,
+        'tag': tag
+    }
+    
+    return widget_id
+
+def w_button_remove(button_id):
+    """Удаляет кнопку"""
+    if button_id in _wm.widgets:
+        widget_info = _wm.widgets[button_id]
+        if widget_info['button_id']:
+            _wm.canvas.delete(widget_info['button_id'])
+        if widget_info['text_id']:
+            _wm.canvas.delete(widget_info['text_id'])
+        del _wm.widgets[button_id]
+
+def w_button_move(button_id, x, y):
+    """Перемещает кнопку"""
+    if button_id in _wm.widgets and _wm.canvas:
+        widget_info = _wm.widgets[button_id]
+        
+        canvas_height = _wm.canvas.winfo_height()
+        if canvas_height <= 1:
+            _wm.root.update()
+            canvas_height = _wm.canvas.winfo_height()
+        
+        y_canvas = canvas_height - y
+        widget_info['x'] = x
+        widget_info['y'] = y
+        
+        if widget_info['button_id']:
+            _wm.canvas.coords(widget_info['button_id'], 
+                             x, y_canvas - widget_info['height'])
+        
+        if widget_info['text_id']:
+            text_x = x + widget_info['width']/2 if widget_info['width'] else x + 50
+            text_y = y_canvas - widget_info['height']/2 if widget_info['height'] else y_canvas - 20
+            _wm.canvas.coords(widget_info['text_id'], text_x, text_y)
+
+def w_button_update_text(button_id, new_text):
+    """Меняет текст на кнопке"""
+    if button_id in _wm.widgets:
+        widget_info = _wm.widgets[button_id]
+        if widget_info['text_id']:
+            _wm.canvas.itemconfig(widget_info['text_id'], text=new_text)
+
+# ========== ФУНКЦИИ РИСОВАНИЯ ==========
+
+def w_draw_rectangle(x1, y1, x2, y2, fill_color="#FFFFFF", 
+                    outline_color="#000000", width=1, tag=None):
+    """Рисует прямоугольник"""
+    if not _wm.canvas:
+        w_canvas()
+    
+    canvas_height = _wm.canvas.winfo_height()
+    y1_canvas = canvas_height - y1
+    y2_canvas = canvas_height - y2
+    
+    if not fill_color.startswith('#'):
+        fill_color = '#' + fill_color
+    if not outline_color.startswith('#'):
+        outline_color = '#' + outline_color
+    
+    rect_id = _wm.canvas.create_rectangle(x1, y1_canvas, x2, y2_canvas,
+                                         fill=fill_color, outline=outline_color,
+                                         width=width, tag=tag)
+    return rect_id
+
+def w_draw_text(x, y, text, color="#000000", font_size=12, 
+               font_family="Arial", tag=None):
+    """Рисует текст"""
+    if not _wm.canvas:
+        w_canvas()
+    
+    canvas_height = _wm.canvas.winfo_height()
+    y_canvas = canvas_height - y
+    
+    if not color.startswith('#'):
+        color = '#' + color
+    
+    text_id = _wm.canvas.create_text(x, y_canvas, text=text, fill=color,
+                                    font=(font_family, font_size), anchor=tk.SW,
+                                    tag=tag)
+    return text_id
+
+def w_draw_image(image_path, x, y, width=None, height=None, tag=None):
+    """Рисует изображение"""
+    if not _wm.canvas:
+        w_canvas()
+    
+    if not PIL_AVAILABLE:
+        print("Ошибка: Pillow не установлен. Используйте: pip install pillow")
+        return None
+    
+    canvas_height = _wm.canvas.winfo_height()
+    y_canvas = canvas_height - y
+    
+    image_key = f"{image_path}_{width}_{height}"
+    
+    if image_key in _wm.images:
+        image_obj = _wm.images[image_key]
+    else:
+        try:
+            img = Image.open(image_path)
+            if width is not None and height is not None:
+                img = img.resize((width, height), Image.Resampling.LANCZOS)
+            image_obj = ImageTk.PhotoImage(img)
+            _wm.images[image_key] = image_obj
+        except Exception as e:
+            print(f"Ошибка загрузки изображения: {e}")
+            return None
+    
+    image_id = _wm.canvas.create_image(x, y_canvas, anchor=tk.SW, 
+                                      image=image_obj, tag=tag)
+    return image_id
+
+def w_clear_canvas():
+    """Очищает холст"""
+    if _wm.canvas:
+        _wm.canvas.delete("all")
+
+# ========== ОБРАБОТКА СОБЫТИЙ ==========
+
+def w_bind_click(callback, tag=None):
+    """Привязывает обработчик клика"""
+    if _wm.canvas:
+        def on_canvas_click(event):
+            canvas_height = _wm.canvas.winfo_height()
+            y_converted = canvas_height - event.y
+            
+            if tag:
+                items = _wm.canvas.find_withtag(tag)
+                for item in items:
+                    bbox = _wm.canvas.bbox(item)
+                    if bbox and bbox[0] <= event.x <= bbox[2] and bbox[1] <= event.y <= bbox[3]:
+                        callback(event.x, y_converted)
+                        return
+            else:
+                callback(event.x, y_converted)
+        
+        _wm.canvas.bind('<Button-1>', on_canvas_click)
+
+def w_bind_motion(callback):
+    """Привязывает обработчик движения мыши"""
+    if _wm.canvas:
+        def on_motion(event):
+            canvas_height = _wm.canvas.winfo_height()
+            y_converted = canvas_height - event.y
+            callback(event.x, y_converted)
+        
+        _wm.canvas.bind('<Motion>', on_motion)
+
+# ========== ДИАЛОГОВЫЕ ОКНА ==========
+
+def w_message_info(title, message):
+    """Показывает информационное сообщение"""
+    messagebox.showinfo(title, message)
+
+def w_message_warning(title, message):
+    """Показывает предупреждение"""
+    messagebox.showwarning(title, message)
+
+def w_message_error(title, message):
+    """Показывает сообщение об ошибке"""
+    messagebox.showerror(title, message)
+
+def w_ask_yesno(title, message):
+    """Задает вопрос Да/Нет"""
+    return messagebox.askyesno(title, message)
+
+def w_open_file_dialog(title="Выберите файл", filetypes=(("Текстовые файлы", "*.txt"), ("Все файлы", "*.*"))):
+    """Открывает диалог выбора файла"""
+    return filedialog.askopenfilename(title=title, filetypes=filetypes)
+
+def w_save_file_dialog(title="Сохранить файл", filetypes=(("Текстовые файлы", "*.txt"), ("Все файлы", "*.*"))):
+    """Открывает диалог сохранения файла"""
+    return filedialog.asksaveasfilename(title=title, filetypes=filetypes, defaultextension=".txt")
+
+# ========== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ==========
+
+def w_set_background(color):
+    """Устанавливает цвет фона"""
+    if not _wm.canvas:
+        w_canvas()
+    
+    if not color.startswith('#'):
+        color = '#' + color
+    
+    _wm.canvas.config(bg=color)
+
+def w_get_canvas_size():
+    """Возвращает размеры холста"""
+    if _wm.canvas:
+        width = _wm.canvas.winfo_width()
+        height = _wm.canvas.winfo_height()
+        return width, height
+    return 0, 0
+
+def w_update():
+    """Обновляет окно"""
+    if _wm.root:
+        _wm.root.update()
+
+def w_set_fullscreen(fullscreen=True):
+    """Включает/выключает полноэкранный режим"""
+    if _wm.root:
+        _wm.root.attributes('-fullscreen', fullscreen)
+
+# ========== ФУНКЦИИ ДЛЯ РАБОТЫ С ТЕКСТОВЫМИ ФАЙЛАМИ ==========
+
+def txt_save(a, b, pos=None):
+    """Сохраняет строку в текстовый файл"""
+    if not b.endswith('.txt'):
+        return False
+    
+    try:
+        with open(b, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except (FileNotFoundError, PermissionError, OSError):
+        lines = []
+    
+    str_a = str(a).rstrip('\n')
+    
+    if pos is None:
+        lines.append(str_a + '\n')
+    else:
+        if not isinstance(pos, int):
+            return False
+        
+        if pos < 0:
+            pos = len(lines) + pos
+        
+        if pos >= len(lines):
+            lines.extend(['\n'] * (pos - len(lines)))
+            lines.append(str_a + '\n')
+        else:
+            lines[pos] = str_a + '\n'
+    
+    try:
+        with open(b, 'w', encoding='utf-8') as f:
+            f.writelines(lines)
+    except (PermissionError, OSError):
+        return False
+    return True
+
+def txt_open(b, pos=None):
+    """Читает данные из текстового файла"""
+    if not b.endswith('.txt'):
+        return None
+    
+    try:
+        with open(b, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    
+    if not lines:
+        return None if pos is not None else []
+    
+    lines = [line.rstrip('\n') for line in lines]
+    
+    if pos is None:
+        return lines if lines else None
+    
+    if not isinstance(pos, int):
+        return None
+    
+    if pos < 0:
+        pos = len(lines) + pos
+    
+    if pos < 0 or pos >= len(lines):
+        return None
+    
+    result = lines[pos]
+    return result if result != '' else None
+
+def txt_delete(b, pos=None, end_pos=None):
+    """Удаляет строку или диапазон строк из файла"""
+    if not b.endswith('.txt'):
+        return False
+    
+    try:
+        with open(b, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except (FileNotFoundError, PermissionError, OSError):
+        return False
+    
+    if not lines:
+        return False
+    
+    lines = [line.rstrip('\n') for line in lines]
+    
+    if pos is None:
+        return False
+    
+    if not isinstance(pos, int):
+        return False
+    
+    if pos < 0:
+        pos = len(lines) + pos
+    
+    if end_pos is None:
+        if pos < 0 or pos >= len(lines):
+            return False
+        del lines[pos]
+    else:
+        if not isinstance(end_pos, int):
+            return False
+        
+        if end_pos < 0:
+            end_pos = len(lines) + end_pos
+        
+        if pos < 0 or pos >= len(lines) or end_pos < 0 or end_pos >= len(lines) or pos > end_pos:
+            return False
+        
+        del lines[pos:end_pos+1]
+    
+    try:
+        with open(b, 'w', encoding='utf-8') as f:
+            for line in lines:
+                f.write(line + '\n')
+    except (PermissionError, OSError):
+        return False
+    return True
+
+def txt_insert(b, a, pos=None):
+    """Вставляет строку в указанную позицию"""
+    if not b.endswith('.txt'):
+        return False
+    
+    try:
+        with open(b, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except (FileNotFoundError, PermissionError, OSError):
+        lines = []
+    
+    lines = [line.rstrip('\n') for line in lines]
+    str_a = str(a).rstrip('\n')
+    
+    if pos is None or pos >= len(lines):
+        lines.append(str_a)
+    else:
+        if pos < 0:
+            pos = len(lines) + pos + 1
+        if pos < 0:
+            pos = 0
+        lines.insert(pos, str_a)
+    
+    try:
+        with open(b, 'w', encoding='utf-8') as f:
+            for line in lines:
+                f.write(line + '\n')
+    except (PermissionError, OSError):
+        return False
+    return True
+
+def txt_clear(b):
+    """Очищает файл"""
+    if not b.endswith('.txt'):
+        return False
+    
+    try:
+        with open(b, 'w', encoding='utf-8') as f:
+            pass
+    except (PermissionError, OSError):
+        return False
+    return True
+
+def txt_lines(b):
+    """Возвращает количество строк в файле"""
+    if not b.endswith('.txt'):
+        return None
+    
+    try:
+        with open(b, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    
+    return len(lines)
+
+def txt_search(b, pattern, case_sensitive=False):
+    """Ищет текст в файле"""
+    if not b.endswith('.txt'):
+        return None
+    
+    try:
+        with open(b, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+    except (FileNotFoundError, PermissionError, OSError):
+        return None
+    
+    if not lines:
+        return []
+    
+    result = []
+    pattern_str = str(pattern)
+    
+    for i, line in enumerate(lines):
+        line_clean = line.rstrip('\n')
+        search_line = line_clean if case_sensitive else line_clean.lower()
+        search_pattern = pattern_str if case_sensitive else pattern_str.lower()
+        
+        if search_pattern in search_line:
+            result.append((i, line_clean))
+    
+    return result if result else []
+
+# ========== СПИСОК ЭКСПОРТИРУЕМЫХ ФУНКЦИЙ ==========
+
+__all__ = [
+    # Графические функции
+    'w_init', 'w_canvas', 'w_mainloop', 'w_destroy',
+    'w_button', 'w_button_remove', 'w_button_move', 'w_button_update_text',
+    'w_draw_rectangle', 'w_draw_text', 'w_draw_image', 'w_clear_canvas',
+    'w_bind_click', 'w_bind_motion',
+    'w_message_info', 'w_message_warning', 'w_message_error', 'w_ask_yesno',
+    'w_open_file_dialog', 'w_save_file_dialog',
+    'w_set_background', 'w_get_canvas_size', 'w_update', 'w_set_fullscreen',
+    
+    # Функции для работы с файлами
+    'txt_save', 'txt_open', 'txt_delete', 'txt_insert',
+    'txt_clear', 'txt_lines', 'txt_search'
+]
+
+# ========== ЕСЛИ ФАЙЛ ЗАПУСКАЕТСЯ КАК ОСНОВНОЙ ==========
+
+if __name__ == "__main__":
+    # Демонстрация работы библиотеки
+    print("Демонстрация библиотеки w_gui")
+    print("Чтобы использовать в своем коде:")
+    print("from w_gui import *")
+    print()
+    print("Запускаю демо-окно...")
+    
+    w_init("Демо: w_gui библиотека", 600, 400)
+    w_set_background("#F0F8FF")
+    
+    def demo_click():
+        w_message_info("Демо", "Кнопка с PNG работает!")
+    
+    # Пытаемся создать кнопку с PNG
+    if os.path.exists("demo_button.png"):
+        w_button("demo_button.png", "PNG кнопка", x=100, y=150, width=200, height=80, command=demo_click)
+    else:
+        w_button("#4CAF50", "Цветная кнопка", x=100, y=150, width=200, height=80, command=demo_click)
+        w_draw_text(100, 100, "Создайте файл demo_button.png для PNG кнопки", color="#666666")
+    
+    w_draw_text(100, 50, "Библиотека w_gui загружена!", color="#000000", font_size=16)
+    w_mainloop()
+
